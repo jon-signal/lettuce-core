@@ -172,12 +172,29 @@ public class DefaultEndpoint implements RedisChannelWriter, Endpoint, PushHandle
             return command;
         }
 
+        final long incrementWritersTime;
+        final long processActivationCommandTime;
+        final long writeAndFlushTime;
+        final long decrementWritersTime;
+
         try {
+            long start = System.currentTimeMillis();
             sharedLock.incrementWriters();
+            long end = System.currentTimeMillis();
+
+            incrementWritersTime = end - start;
 
             if (inActivation) {
+                start = System.currentTimeMillis();
                 command = processActivationCommand(command);
+                end = System.currentTimeMillis();
+
+                processActivationCommandTime = end - start;
+            } else {
+                processActivationCommandTime = 0;
             }
+
+            start = System.currentTimeMillis();
 
             if (autoFlushCommands) {
 
@@ -190,12 +207,24 @@ public class DefaultEndpoint implements RedisChannelWriter, Endpoint, PushHandle
             } else {
                 writeToBuffer(command);
             }
+
+            end = System.currentTimeMillis();
+
+            writeAndFlushTime = end - start;
         } finally {
+            final long start = System.currentTimeMillis();
             sharedLock.decrementWriters();
+            final long end = System.currentTimeMillis();
+
+            decrementWritersTime = end - start;
+
             if (debugEnabled) {
                 logger.debug("{} write() done", logPrefix());
             }
         }
+
+        logger.debug("{} write() timings (ms): incrementWriters: {}; processActivationCommand: {}; writeAndFlush: {}; decrementWriters: {}",
+                logPrefix(), incrementWritersTime, processActivationCommandTime, writeAndFlushTime, decrementWritersTime);
 
         return command;
     }
@@ -357,9 +386,23 @@ public class DefaultEndpoint implements RedisChannelWriter, Endpoint, PushHandle
 
     private void writeToChannelAndFlush(RedisCommand<?, ?, ?> command) {
 
-        QUEUE_SIZE.incrementAndGet(this);
+        final long incrementAndGetTime;
+        final long writeAndFlushTime;
+        final long addListenerTime;
 
+        long start = System.currentTimeMillis();
+        QUEUE_SIZE.incrementAndGet(this);
+        long end = System.currentTimeMillis();
+
+        incrementAndGetTime = end - start;
+
+        start = System.currentTimeMillis();
         ChannelFuture channelFuture = channelWriteAndFlush(command);
+        end = System.currentTimeMillis();
+
+        writeAndFlushTime = end - start;
+
+        start = System.currentTimeMillis();
 
         if (reliability == Reliability.AT_MOST_ONCE) {
             // cancel on exceptions and remove from queue, because there is no housekeeping
@@ -370,6 +413,13 @@ public class DefaultEndpoint implements RedisChannelWriter, Endpoint, PushHandle
             // commands are ok to stay within the queue, reconnect will retrigger them
             channelFuture.addListener(RetryListener.newInstance(this, command));
         }
+
+        end = System.currentTimeMillis();
+
+        addListenerTime = end - start;
+
+        logger.debug("{} writeToChannelAndFlush timings (ms): incrementAndGet: {}, writeAndFlush: {}, addListener: {}",
+                logPrefix(), incrementAndGetTime, writeAndFlushTime, addListenerTime);
     }
 
     private void writeToChannelAndFlush(Collection<? extends RedisCommand<?, ?, ?>> commands) {
